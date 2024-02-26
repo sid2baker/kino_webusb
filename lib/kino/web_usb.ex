@@ -6,14 +6,12 @@ defmodule Kino.WebUSB do
     Kino.JS.Live.new(__MODULE__, nil)
   end
 
-  def get_endpoints(device) do
-    Kino.JS.Live.call(device, :get_endpoints)
+  def info(device) do
+    Kino.JS.Live.call(device, :info)
   end
 
-  def send(device, endpoint, data, opts \\ []) do
-    response_length = Keyword.get(opts, :response_length, 64)
-
-    Kino.JS.Live.call(device, {:send, endpoint, data, response_length})
+  def get_endpoints(device) do
+    Kino.JS.Live.call(device, :get_endpoints)
   end
 
   def transfer_out(device, endpoint, data) do
@@ -26,7 +24,7 @@ defmodule Kino.WebUSB do
 
   @impl true
   def init(nil, ctx) do
-    {:ok, assign(ctx, caller: nil, client_id: nil)}
+    {:ok, assign(ctx, caller: nil, client_id: nil, device_id: nil, device_status: :disconnected, device_config: %{})}
   end
 
   @impl true
@@ -35,14 +33,21 @@ defmodule Kino.WebUSB do
   end
 
   @impl true
-  def handle_call(:get_endpoints, from, ctx) do
-    send_event(ctx, ctx.assigns.client_id, "get_endpoints", nil)
-    {:noreply, assign(ctx, caller: from)}
+  def handle_call(:info, _from, ctx) do
+    if ctx.assigns.device_id do
+      info =
+        ctx.assigns.device_config
+        |> Map.put(:id, ctx.assigns.device_id)
+        |> Map.put(:status, ctx.assigns.device_status)
+      {:reply, {:ok, info}, ctx}
+    else
+      {:reply, {:error, "No opened device"}, ctx}
+    end
   end
 
   @impl true
-  def handle_call({:send, endpoint, data, response_length}, from, ctx) do
-    send_event(ctx, ctx.assigns.client_id, "send", {:binary, %{endpoint: endpoint, response_length: response_length}, data})
+  def handle_call(:get_endpoints, from, ctx) do
+    send_event(ctx, ctx.assigns.client_id, "get_endpoints", nil)
     {:noreply, assign(ctx, caller: from)}
   end
 
@@ -64,10 +69,46 @@ defmodule Kino.WebUSB do
       case data do
         "ok" -> Kino.JS.Live.reply(ctx.assigns.caller, :ok)
         ["ok", data] -> Kino.JS.Live.reply(ctx.assigns.caller, {:ok, data})
+        {:binary, "ok", binary} -> Kino.JS.Live.reply(ctx.assigns.caller, {:ok, binary})
         ["error", error] -> Kino.JS.Live.reply(ctx.assigns.caller, {:error, error})
       end
     end
 
     {:noreply, assign(ctx, caller: nil)}
+  end
+
+  @impl true
+  def handle_event("device_update", %{"id" => id, "selectedConfiguration" => config, "claimedInterfaces" => interfaces}, ctx) do
+    ctx = assign(ctx, device_id: id, device_status: :connected, device_config: %{selected_configuration: config, claimed_interfaces: interfaces})
+    {:noreply, ctx}
+  end
+
+  @impl true
+  def handle_event("device_closed", device_id, ctx) do
+    if device_id == ctx.assigns.device_id do
+      {:noreply, assign(ctx, device_id: nil, device_status: :disconnected, device_config: %{})}
+    else
+      {:noreply, ctx}
+    end
+  end
+
+  @impl true
+  def handle_event("device_connected", device_id, ctx) do
+    if ctx.assigns.device_id == device_id and ctx.assigns.device_status == :disconnected do
+      send_event(ctx, ctx.assigns.client_id, "open_device", %{id: ctx.assigns.device_id, config: ctx.assigns.device_config})
+      {:noreply, ctx}
+    else
+      {:noreply, ctx}
+    end
+  end
+
+  @impl true
+  def handle_event("device_disconnected", device_id, ctx) do
+    if ctx.assigns.device_id == device_id do
+      ctx = assign(ctx, device_status: :disconnected)
+      {:noreply, ctx}
+    else
+      {:noreply, ctx}
+    end
   end
 end

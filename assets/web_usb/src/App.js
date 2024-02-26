@@ -36,6 +36,11 @@ async function getDeviceById(id) {
   return deviceDict[id];
 }
 
+function getClaimedInterfaceNumbers(config) {
+  const claimedInterfaces = config.interfaces.filter((iface) => iface.claimed);
+  return claimedInterfaces.map((iface) => iface.interfaceNumber);
+} 
+
 function getClaimedEndpoints(config) {
   if (config === null) {
     return [];
@@ -150,6 +155,7 @@ function WebUSBComponent({ ctx, payload }) {
 
     const updatedDevice = {
       configurations: configurations,
+      availableEndpoints: getClaimedEndpoints(d.configuration),
       productName: d.productName,
       manufacturerName: d.manufacturerName,
       serialNumber: d.serialNumber,
@@ -173,6 +179,11 @@ function WebUSBComponent({ ctx, payload }) {
     };
     console.log("Updated:", updatedDevice);
     setOpenedDevice(updatedDevice);
+    ctx.pushEvent("device_update", {
+      id: createDeviceId(d),
+      selectedConfiguration: d.configuration.configurationValue,
+      claimedInterfaces: getClaimedInterfaceNumbers(d.configuration),
+    });
   };
 
   const requestDevice = async () => {
@@ -192,6 +203,11 @@ function WebUSBComponent({ ctx, payload }) {
       return { id: id, name: device.productName || "Unkown Device" };
     });
     setDeviceList(deviceList);
+
+    if (openedDeviceRef.current && !openedDeviceRef.current.opened) {
+      openedDeviceRef.current = null;
+      setOpenedDevice(null);
+    }
   };
 
   const handleOpenDevice = async () => {
@@ -200,7 +216,7 @@ function WebUSBComponent({ ctx, payload }) {
       await device.open();
       log("Device opened:", device);
       openedDeviceRef.current = device;
-      updateDevice(device, selectedDevice);
+      updateDevice();
     } catch (error) {
       logError("Error openeing the device:", error);
     }
@@ -211,6 +227,7 @@ function WebUSBComponent({ ctx, payload }) {
       const device = openedDeviceRef.current;
       await device.close();
       openedDeviceRef.current = null;
+      ctx.pushEvent("device_closed", selectedDevice);
       setOpenedDevice(null);
     } catch (error) {
       logError("Error closing the device:", error);
@@ -218,7 +235,34 @@ function WebUSBComponent({ ctx, payload }) {
   };
 
   useEffect(() => {
-    handleRefresh();
+    navigator.usb.addEventListener("connect", async (event) => {
+      log("Device connected", event);
+      await handleRefresh();
+      ctx.pushEvent("device_connected", createDeviceId(event.device));
+    });
+
+    navigator.usb.addEventListener("disconnect", async (event) => {
+      log("Device disconnected", event);
+      await handleRefresh();
+      ctx.pushEvent("device_disconnected", createDeviceId(event.device));
+    });
+
+    ctx.handleEvent("open_device", async ({ id, config }) => {
+      try {
+        await handleRefresh();
+        setSelectedDevice(id);
+        const device = await getDeviceById(id);
+        await device.open();
+        await device.selectConfiguration(config.selected_configuration);
+        config.claimed_interfaces.map(async (iface) => {
+          await device.claimInterface(iface);
+        });
+        openedDeviceRef.current = device;
+        updateDevice();
+      } catch (error) {
+        logError("Can't open device", error);
+      }
+    });
     ctx.handleEvent("get_endpoints", () => {
       if (openedDeviceRef.current) {
         ctx.pushEvent("device_response", [
@@ -227,24 +271,6 @@ function WebUSBComponent({ ctx, payload }) {
         ]);
       } else {
         ctx.pushEvent("device_response", ["error", "No opened device"]);
-      }
-    });
-    ctx.handleEvent("send", async ([info, data]) => {
-      try {
-        await withTimeout(
-          openedDeviceRef.current.transferOut(info.endpoint, data),
-          3,
-        );
-        const response = await withTimeout(
-          openedDeviceRef.current.transferIn(
-            info.endpoint,
-            info.response_length,
-          ),
-          3,
-        );
-        ctx.pushEvent("device_response", ["ok", response.data]);
-      } catch (error) {
-        ctx.pushEvent("device_response", ["error", error.message]);
       }
     });
     ctx.handleEvent("transfer_out", async ([endpoint, data]) => {
@@ -264,11 +290,13 @@ function WebUSBComponent({ ctx, payload }) {
           openedDeviceRef.current.transferIn(endpoint, length),
           3,
         );
-        ctx.pushEvent("device_response", ["ok", response]);
+        ctx.pushEvent("device_response", ["ok", response.data.buffer]);
       } catch (error) {
         ctx.pushEvent("device_response", ["error", error.message]);
       }
     });
+
+    handleRefresh();
   }, []);
 
   return (
@@ -453,7 +481,7 @@ function WebUSBComponent({ ctx, payload }) {
         className={`flex-col ${configuration.active ? "bg-green-200" : "bg-gray-400"}`}
       >
         <div>{configuration.name || "Config " + configuration.value}</div>
-        <div className="flex-row">
+        <div className="bg-gray-300 flex-row">
           {configuration.interfaces.map((iface, index) => (
             <InterfaceViewer key={index} iface={iface} />
           ))}
