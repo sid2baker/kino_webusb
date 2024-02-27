@@ -6,6 +6,10 @@ defmodule Kino.WebUSB do
     Kino.JS.Live.new(__MODULE__, nil)
   end
 
+  def open_device(device, device_id, device_config) do
+    Kino.JS.Live.cast(device, {:open_device, device_id, device_config})
+  end
+
   def info(device) do
     Kino.JS.Live.call(device, :info)
   end
@@ -33,6 +37,12 @@ defmodule Kino.WebUSB do
   end
 
   @impl true
+  def handle_cast({:open_device, device_id, device_config}, ctx) do
+    send_event(ctx, ctx.assigns.client_id, "open_device", %{id: device_id, config: device_config})
+    {:noreply, ctx}
+  end
+
+  @impl true
   def handle_call(:info, _from, ctx) do
     if ctx.assigns.device_id do
       info =
@@ -44,7 +54,7 @@ defmodule Kino.WebUSB do
       {:reply, {:error, "No opened device"}, ctx}
     end
   end
-
+  
   @impl true
   def handle_call(:get_endpoints, from, ctx) do
     send_event(ctx, ctx.assigns.client_id, "get_endpoints", nil)
@@ -94,6 +104,7 @@ defmodule Kino.WebUSB do
 
   @impl true
   def handle_event("device_connected", device_id, ctx) do
+    # try to reconnect configured device
     if ctx.assigns.device_id == device_id and ctx.assigns.device_status == :disconnected do
       send_event(ctx, ctx.assigns.client_id, "open_device", %{id: ctx.assigns.device_id, config: ctx.assigns.device_config})
       {:noreply, ctx}

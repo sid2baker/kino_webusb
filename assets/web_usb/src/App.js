@@ -33,13 +33,14 @@ async function getDeviceList() {
 
 async function getDeviceById(id) {
   const deviceDict = await getDeviceList();
-  return deviceDict[id];
+  const device = deviceDict[id] || null;
+  return device;
 }
 
 function getClaimedInterfaceNumbers(config) {
   const claimedInterfaces = config.interfaces.filter((iface) => iface.claimed);
   return claimedInterfaces.map((iface) => iface.interfaceNumber);
-} 
+}
 
 function getClaimedEndpoints(config) {
   if (config === null) {
@@ -186,28 +187,23 @@ function WebUSBComponent({ ctx, payload }) {
     });
   };
 
-  const requestDevice = async () => {
+  const handleRequestDevice = async () => {
     try {
       const device = await navigator.usb.requestDevice({ filters: [] });
       log("Device connected:", device);
-      await handleRefresh();
+      await handleGetDeviceList();
       setSelectedDevice(createDeviceId(device));
     } catch (error) {
       logError("Error connecting to the device:", error);
     }
   };
 
-  const handleRefresh = async () => {
+  const handleGetDeviceList = async () => {
     const deviceListDict = await getDeviceList();
     const deviceList = Object.entries(deviceListDict).map(([id, device]) => {
-      return { id: id, name: device.productName || "Unkown Device" };
+      return { id: id, name: device.productName || "Unknown Device" };
     });
     setDeviceList(deviceList);
-
-    if (openedDeviceRef.current && !openedDeviceRef.current.opened) {
-      openedDeviceRef.current = null;
-      setOpenedDevice(null);
-    }
   };
 
   const handleOpenDevice = async () => {
@@ -223,11 +219,13 @@ function WebUSBComponent({ ctx, payload }) {
   };
 
   const handleCloseDevice = async () => {
+    if (!openedDeviceRef.current) return;
+
     try {
-      const device = openedDeviceRef.current;
-      await device.close();
-      openedDeviceRef.current = null;
+      await openedDeviceRef.current.close();
+      log("Device closed:", openedDeviceRef.current);
       ctx.pushEvent("device_closed", selectedDevice);
+      openedDeviceRef.current = null;
       setOpenedDevice(null);
     } catch (error) {
       logError("Error closing the device:", error);
@@ -236,27 +234,29 @@ function WebUSBComponent({ ctx, payload }) {
 
   useEffect(() => {
     navigator.usb.addEventListener("connect", async (event) => {
-      log("Device connected", event);
-      await handleRefresh();
+      log("Device connected", event.device);
+      await handleGetDeviceList();
       ctx.pushEvent("device_connected", createDeviceId(event.device));
     });
 
     navigator.usb.addEventListener("disconnect", async (event) => {
-      log("Device disconnected", event);
-      await handleRefresh();
+      log("Device disconnected", event.device);
+      await handleGetDeviceList();
       ctx.pushEvent("device_disconnected", createDeviceId(event.device));
     });
 
     ctx.handleEvent("open_device", async ({ id, config }) => {
       try {
-        await handleRefresh();
+        await handleGetDeviceList();
         setSelectedDevice(id);
         const device = await getDeviceById(id);
         await device.open();
         await device.selectConfiguration(config.selected_configuration);
-        config.claimed_interfaces.map(async (iface) => {
-          await device.claimInterface(iface);
-        });
+        await Promise.all(
+          config.claimed_interfaces.map(async (iface) => {
+            await device.claimInterface(iface);
+          }),
+        );
         openedDeviceRef.current = device;
         updateDevice();
       } catch (error) {
@@ -296,7 +296,7 @@ function WebUSBComponent({ ctx, payload }) {
       }
     });
 
-    handleRefresh();
+    handleGetDeviceList();
   }, []);
 
   return (
@@ -305,11 +305,11 @@ function WebUSBComponent({ ctx, payload }) {
     >
       <Header>
         {!openedDevice && (
-          <HeaderButton onClick={requestDevice}>
+          <HeaderButton onClick={handleRequestDevice}>
             <RiUsbLine size={24} />
           </HeaderButton>
         )}
-        <HeaderButton onClick={handleRefresh}>
+        <HeaderButton onClick={handleGetDeviceList}>
           <RiRefreshLine size={24} />
         </HeaderButton>
         <div className="grow" />
@@ -481,7 +481,7 @@ function WebUSBComponent({ ctx, payload }) {
         className={`flex-col ${configuration.active ? "bg-green-200" : "bg-gray-400"}`}
       >
         <div>{configuration.name || "Config " + configuration.value}</div>
-        <div className="bg-gray-300 flex-row">
+        <div className="flex-row bg-gray-300">
           {configuration.interfaces.map((iface, index) => (
             <InterfaceViewer key={index} iface={iface} />
           ))}
